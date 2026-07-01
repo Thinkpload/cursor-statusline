@@ -217,8 +217,6 @@ if [ -n "${CLOUD_NOW_W:-}" ] && [ "${CLOUD_SOURCE:-none}" != "none" ]; then
   srv_now_dim="${DIM}${CLOUD_NOW_W}W now${RESET}"
   srv_tag="${DIM}${CLOUD_MODEL:-Composer} · ${CLOUD_GPU:-GPU}${RESET}"
   echo -e "${BLUE}${BOLD}SRV ${RESET} ${BOLD}${BRIGHT_BLUE}☁ ${srv_wh_fmt} session${RESET}  ${srv_color}${srv_bar}${RESET} ${srv_pct}%  ${srv_now_dim}  ${srv_tag}"
-elif [ "${CLOUD_SOURCE:-none}" = "none" ]; then
-  echo -e "${BLUE}${BOLD}SRV ${RESET} ${DIM}☁ waiting for Composer GPU usage…${RESET}"
 fi
 
 # ── Line 6: rate limits (optional) ───────────────────────────────────────────

@@ -84,7 +84,9 @@ cloud_track() {
 
   local now last_wall=0 last_sig="" last_usage_num=0
   local last_in=0 last_out=0 last_cr=0 last_cw=0 accum_wh=0
+  local last_ctx_in=0 last_ctx_out=0
   local cum_in=0 cum_out=0 cum_cache_r=0 cum_cache_w=0
+  local got_usage=0
 
   now=$(date +%s)
 
@@ -96,6 +98,8 @@ cloud_track() {
     last_out=$(jq -r '.cum_out // 0' "$state_file" 2>/dev/null)
     last_cr=$(jq -r '.cum_cache_r // 0' "$state_file" 2>/dev/null)
     last_cw=$(jq -r '.cum_cache_w // 0' "$state_file" 2>/dev/null)
+    last_ctx_in=$(jq -r '.payload_ctx_in // 0' "$state_file" 2>/dev/null)
+    last_ctx_out=$(jq -r '.payload_ctx_out // 0' "$state_file" 2>/dev/null)
     accum_wh=$(jq -r '.accum_wh // 0' "$state_file" 2>/dev/null)
     cum_in=$last_in
     cum_out=$last_out
@@ -107,10 +111,12 @@ cloud_track() {
     last_wall=$now
   fi
 
-  local usage_type usage_sig payload_out
+  local usage_type usage_sig payload_out payload_ctx_in payload_ctx_out
   usage_type=$(echo "$payload" | jq -r '.context_window.current_usage | type' 2>/dev/null)
   [ -z "$usage_type" ] || [ "$usage_type" = "null" ] && usage_type="null"
   payload_out=$(echo "$payload" | jq -r '.context_window.total_output_tokens // empty' 2>/dev/null)
+  payload_ctx_in=$(echo "$payload" | jq -r '.context_window.total_input_tokens // 0' 2>/dev/null)
+  payload_ctx_out=$(echo "$payload" | jq -r '.context_window.total_output_tokens // 0' 2>/dev/null)
 
   if [ "$usage_type" = "object" ]; then
     usage_sig=$(echo "$payload" | jq -c '.context_window.current_usage' 2>/dev/null || echo "")
@@ -125,6 +131,7 @@ cloud_track() {
       cum_cache_r=$((cum_cache_r + add_cr))
       cum_cache_w=$((cum_cache_w + add_cw))
       last_sig=$usage_sig
+      got_usage=1
     fi
   elif [ "$usage_type" = "number" ]; then
     local curr_n delta
@@ -132,6 +139,7 @@ cloud_track() {
     delta=$((curr_n - last_usage_num))
     if [ "$delta" -gt 0 ]; then
       cum_in=$((cum_in + delta))
+      got_usage=1
     fi
     last_usage_num=$curr_n
   fi
@@ -139,6 +147,21 @@ cloud_track() {
   if [ -n "$payload_out" ] && [ "$payload_out" != "null" ]; then
     if [ "$payload_out" -gt "$cum_out" ] 2>/dev/null; then
       cum_out=$payload_out
+      got_usage=1
+    fi
+  fi
+
+  # Fallback before current_usage exists (common in first session turn)
+  if [ "$got_usage" -eq 0 ]; then
+    local dctx_in dctx_out
+    dctx_in=$((payload_ctx_in - last_ctx_in))
+    dctx_out=$((payload_ctx_out - last_ctx_out))
+    [ "$dctx_in" -lt 0 ] && dctx_in=0
+    [ "$dctx_out" -lt 0 ] && dctx_out=0
+    if [ "$dctx_in" -gt 0 ] || [ "$dctx_out" -gt 0 ]; then
+      cum_in=$((cum_in + dctx_in))
+      cum_out=$((cum_out + dctx_out))
+      got_usage=1
     fi
   fi
 
@@ -157,7 +180,7 @@ cloud_track() {
 
   local total_tok=$((cum_in + cum_out))
 
-  if [ "$total_tok" -gt 0 ] || [ "$delta_in" -gt 0 ] || [ "$delta_out" -gt 0 ]; then
+  if [ "$delta_in" -gt 0 ] || [ "$delta_out" -gt 0 ] || [ "$delta_cr" -gt 0 ] || [ "$delta_cw" -gt 0 ]; then
     interval_wh=$(cloud_token_wh "$delta_in" "$delta_out" "$delta_cr" "$delta_cw")
     accum_wh=$(awk -v a="$accum_wh" -v d="$interval_wh" 'BEGIN { printf "%.6f", a + d }')
     CLOUD_SOURCE="tokens"
@@ -167,6 +190,8 @@ cloud_track() {
     if [ -n "$session_cost" ] && [ "$session_cost" != "0" ] && [ "$session_cost" != "null" ]; then
       accum_wh=$(awk -v c="$session_cost" -v r="${WH_PER_DOLLAR:-35}" 'BEGIN { printf "%.6f", c * r }')
       CLOUD_SOURCE="cost"
+    elif [ -n "$CLOUD_MODEL" ] && [ "$CLOUD_MODEL" != "Unknown" ]; then
+      CLOUD_SOURCE="idle"
     fi
   fi
 
@@ -198,8 +223,10 @@ cloud_track() {
     --argjson cum_cache_r "$cum_cache_r" \
     --argjson cum_cache_w "$cum_cache_w" \
     --argjson accum_wh "$accum_wh" \
+    --argjson payload_ctx_in "${payload_ctx_in:-0}" \
+    --argjson payload_ctx_out "${payload_ctx_out:-0}" \
     --arg model "${CLOUD_MODEL:-}" \
-    '{last_wall:$last_wall,last_sig:$last_sig,last_usage_num:$last_usage_num,cum_in:$cum_in,cum_out:$cum_out,cum_cache_r:$cum_cache_r,cum_cache_w:$cum_cache_w,accum_wh:$accum_wh,model:$model}' \
+    '{last_wall:$last_wall,last_sig:$last_sig,last_usage_num:$last_usage_num,cum_in:$cum_in,cum_out:$cum_out,cum_cache_r:$cum_cache_r,cum_cache_w:$cum_cache_w,accum_wh:$accum_wh,payload_ctx_in:$payload_ctx_in,payload_ctx_out:$payload_ctx_out,model:$model}' \
     > "$state_file" 2>/dev/null || true
 
   CLOUD_WH=$accum_wh
